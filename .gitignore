@@ -1,0 +1,8 @@
+node_modules/
+.gemini-lumitome/
+*.log
+.env
+accounts/
+models.json
+gsb
+gsb.exe
