@@ -10,8 +10,9 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { spawn, execFile } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.1";
 export const GSB_VERSION = "0.4.0"; // pinned upstream release, verified 2026-11-13
 export const GSB_PORT = 20133;
 export const NINEROUTER_URL = "http://127.0.0.1:20128/v1";
@@ -380,4 +381,9 @@ async function main(argv) {
     process.exitCode = 1;
   }
 }
-if (import.meta.url === `file://${process.argv[1]}`) main(process.argv.slice(2));
+// main() must run even when the repo lives in a path with spaces
+// (e.g. "LAB GITHUB"): import.meta.url URL-encodes them (%20) while
+// process.argv[1] does not, so a plain string comparison silently
+// never matches and the CLI exits with no output. pathToFileURL
+// encodes both sides the same way.
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) main(process.argv.slice(2));

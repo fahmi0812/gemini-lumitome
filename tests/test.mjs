@@ -59,12 +59,26 @@ async function gl(...args) {
 test("version consistency: VERSION == package.json == cli VERSION == gl version", async () => {
   const versionFile = fs.readFileSync(path.join(ROOT, "VERSION"), "utf8").trim();
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
-  assert.equal(versionFile, "0.1.0");
-  assert.equal(pkg.version, "0.1.0");
-  assert.equal(cli.VERSION, "0.1.0");
+  assert.equal(versionFile, "0.1.1");
+  assert.equal(pkg.version, "0.1.1");
+  assert.equal(cli.VERSION, "0.1.1");
   const { stdout } = await gl("version");
-  assert.match(stdout, /gemini-lumitome 0\.1\.0/);
+  assert.match(stdout, /gemini-lumitome 0\.1\.1/);
   assert.equal(pkg.dependencies, undefined, "zero npm dependencies");
+});
+
+test("CLI runs from a path with spaces (regression: LAB GITHUB)", async () => {
+  // v0.1.0 bug: the main() guard compared import.meta.url (spaces as %20)
+  // with file:// + process.argv[1] (spaces as-is), so it never matched and
+  // the CLI exited silently with code 0 when the repo lived in a path
+  // containing a space. Copy the repo to a spaced path and run it there.
+  const spaced = fs.mkdtempSync(path.join(os.tmpdir(), "gl test space-"));
+  const dest = path.join(spaced, "gemini-lumitome");
+  fs.cpSync(ROOT, dest, { recursive: true });
+  const { stdout } = await run(process.execPath, [path.join(dest, "cli.mjs"), "version"], {
+    env: { ...process.env, HOME: TMP, BRIDGE_API_KEY: "test123" },
+  });
+  assert.match(stdout, new RegExp(`gemini-lumitome ${cli.VERSION.replace(/\./g, "\\.")}`));
 });
 
 test("pickCodingModel: argon first, then carbon, pro, flash, first, empty", () => {

@@ -1,4 +1,4 @@
-# gemini-lumitome — v0.1.0
+# gemini-lumitome — v0.1.1
 
 Gemini Web (your Google accounts, incl. Pro) → Lumitome / OpenCode, in the
 simplest way that respects Lumitome's own rule: **model only via 9router**.

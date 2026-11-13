@@ -1,4 +1,4 @@
-# DESIGN.md — gemini-lumitome v0.1.0
+# DESIGN.md — gemini-lumitome v0.1.1
 
 ## The problem, in one sentence
 
@@ -111,7 +111,7 @@ Components in this repo (and nothing else):
 |---|---|---|
 | `cli.mjs` | Node stdlib-only CLI (`gl`) | setup/login/probe/start/stop/status/models/bench/connect; the test surface |
 | `install.sh` / `install.ps1` | one-command install, Linux / Windows | same commands on both OSes; no WSL, Docker, Python |
-| `VERSION`, `package.json` | version single-source (0.1.0) | release gate: VERSION == tag |
+| `VERSION`, `package.json` | version single-source (0.1.1) | release gate: VERSION == tag |
 | `tests/test.mjs` | node:test, stdlib only, mock gsb daemon | tight feedback loop without a Google account |
 | `docs/9ROUTER.md`, `docs/LIVE-TEST.md` | click-by-click + live test script | the parts that cannot be automated honestly |
 
