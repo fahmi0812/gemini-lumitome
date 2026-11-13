@@ -50,8 +50,11 @@ Example (verify the id with `gl models` first — names drift upstream):
 gsb/gemini-flash
 ```
 
-Coding default: the model whose id contains `argon` (Gemini Web
-"Kode & analisis"). `gl models` picks it for you and explains why.
+Coding default: the model whose id contains `hydrogen`
+(`gsb/gemini-4-hydrogen`), with no fallback to other tiers. Measured
+2026-11-13 on a 6-token prompt: hydrogen p50 TTFT 12.2 s, while
+`gemini-pro` and `gemini-carbon` sent no first token within 45 s. If
+hydrogen is missing, `gl models` says so instead of picking another model.
 
 ## Direct mode (optional, NOT the default)
 

@@ -19,7 +19,7 @@ const cli = await import("../cli.mjs");
 
 const FIXTURE_MODELS = [
   { id: "gemini-flash", display_name: "Gemini Flash" },
-  { id: "gemini-argon", display_name: "Gemini Argon" },
+  { id: "gemini-4-hydrogen", display_name: "Everyday help" },
   { id: "gemini-carbon", display_name: "Gemini Carbon" },
 ];
 
@@ -36,6 +36,16 @@ function mockDaemon(opts = {}) {
       return send(200, { data: FIXTURE_MODELS, object: "list" });
     }
     if (req.url === "/v1/accounts") return send(200, { accounts: [{ id: "acc1" }] });
+    if (req.url === "/v1/chat/completions" && opts.chatHang) return; // never answers: upstream stuck
+    if (req.url === "/v1/chat/completions" && opts.chatStream) {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.end(`data: ${JSON.stringify({ model: JSON.parse(body).model, choices: [{ delta: { content: "OK" } }] })}\n\n`);
+      });
+      return;
+    }
     if (req.url === "/v1/chat/completions") return send(503, { error: { code: "auth_unavailable", message: "no accounts configured", type: "upstream_error" } });
     if (req.url === "/v1/responses") return send(503, { error: { code: "auth_unavailable", message: "no accounts configured", type: "upstream_error" } });
     return send(404, { error: { message: "not found" } });
@@ -81,12 +91,11 @@ test("CLI runs from a path with spaces (regression: LAB GITHUB)", async () => {
   assert.match(stdout, new RegExp(`gemini-lumitome ${cli.VERSION.replace(/\./g, "\\.")}`));
 });
 
-test("pickCodingModel: argon first, then carbon, pro, flash, first, empty", () => {
-  assert.equal(cli.pickCodingModel(FIXTURE_MODELS).id, "gemini-argon");
-  assert.equal(cli.pickCodingModel([{ id: "gemini-carbon" }, { id: "gemini-flash" }]).id, "gemini-carbon");
-  assert.equal(cli.pickCodingModel([{ id: "gemini-3.1-pro" }, { id: "gemini-flash" }]).id, "gemini-3.1-pro");
-  assert.equal(cli.pickCodingModel([{ id: "gemini-flash" }]).id, "gemini-flash");
-  assert.equal(cli.pickCodingModel([{ id: "something-else" }]).id, "something-else");
+test("pickCodingModel: hydrogen only, never falls back to other tiers", () => {
+  assert.equal(cli.pickCodingModel(FIXTURE_MODELS).id, "gemini-4-hydrogen");
+  assert.equal(cli.pickCodingModel(["gemini-carbon", "gemini-4-hydrogen"]).id, "gemini-4-hydrogen");
+  assert.equal(cli.pickCodingModel([{ id: "gemini-carbon" }, { id: "gemini-pro" }, { id: "gemini-flash-lite" }]).id, "");
+  assert.match(cli.pickCodingModel([{ id: "gemini-carbon" }]).reason, /no hydrogen/);
   assert.equal(cli.pickCodingModel([]).id, "");
 });
 
@@ -121,7 +130,7 @@ test("mock daemon: models fetch + 1h cache, status, bench (non-live), connect", 
   cli.saveConfig({ ...cli.defaultConfig(), host: "127.0.0.1", port });
   try {
     const models = await cli.fetchModels(cli.loadConfig(), { refresh: true });
-    assert.deepEqual(models.map((m) => m.id), ["gemini-flash", "gemini-argon", "gemini-carbon"]);
+    assert.deepEqual(models.map((m) => m.id), ["gemini-flash", "gemini-4-hydrogen", "gemini-carbon"]);
   } finally {
     await closeServer(server);
   }
@@ -136,8 +145,8 @@ test("mock daemon: models fetch + 1h cache, status, bench (non-live), connect", 
     const st = await gl("status");
     assert.match(st.stdout, /status: OK — accounts=1 models=3/);
     const mo = await gl("models");
-    assert.match(mo.stdout, /gemini-argon/);
-    assert.match(mo.stdout, /coding model: gemini-argon/);
+    assert.match(mo.stdout, /gemini-4-hydrogen/);
+    assert.match(mo.stdout, /coding model: gemini-4-hydrogen/);
     const be = await gl("bench");
     assert.match(be.stdout, /health:/);
     assert.match(be.stdout, /models-cached:/);
@@ -145,7 +154,7 @@ test("mock daemon: models fetch + 1h cache, status, bench (non-live), connect", 
     const co = await gl("connect");
     assert.match(co.stdout, /Gemini Stealth Bridge/);
     assert.match(co.stdout, /Base URL:\s+http:\/\/127\.0\.0\.1:\d+\/v1/);
-    assert.match(co.stdout, /gsb\/gemini-argon/);
+    assert.match(co.stdout, /gsb\/gemini-4-hydrogen/);
     assert.match(co.stdout, /Direct mode|direct mode/);
   } finally {
     await closeServer(server2);
@@ -181,6 +190,37 @@ test("commands without a daemon fail with a clear message, not a crash", async (
   try { await gl("bench"); } catch (e) { benchErr = e; }
   assert.ok(benchErr, "gl bench should exit non-zero without a daemon");
   assert.match(String(benchErr.stderr || ""), /gsb is not running/);
+});
+
+test("bench --live: stuck upstream fails within --timeout instead of hanging forever", async () => {
+  const server = await mockDaemon({ chatHang: true });
+  const port = server.address().port;
+  cli.saveConfig({ ...cli.defaultConfig(), host: "127.0.0.1", port });
+  const t0 = Date.now();
+  let err;
+  try {
+    await gl("bench", "--live", "--timeout", "1");
+  } catch (e) { err = e; }
+  try {
+    assert.ok(err, "bench --live should exit non-zero when the upstream never answers");
+    assert.match(String(err.stderr || ""), /no first token within 1 s/);
+    assert.ok(Date.now() - t0 < 15000, "must not wait past the timeout");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("bench --live --model picks the given model and reports TTFT", async () => {
+  const server = await mockDaemon({ chatStream: true });
+  const port = server.address().port;
+  cli.saveConfig({ ...cli.defaultConfig(), host: "127.0.0.1", port });
+  try {
+    const be = await gl("bench", "--live", "--model", "gemini-4-hydrogen");
+    assert.match(be.stdout, /live chat with gemini-4-hydrogen/);
+    assert.match(be.stdout, /live TTFT: \d+ ms, HTTP 200/);
+  } finally {
+    await closeServer(server);
+  }
 });
 
 test("bench without an account reports timings as unavailable instead of dying mid-run", async () => {

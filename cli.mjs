@@ -106,24 +106,15 @@ export function stats(ts) {
 
 // Pick the coding model from a /v1/models list, by id — never by web display
 // name (web names drift: Argon was renamed Carbon upstream on 2026-11-10).
-// Order mirrors Gemini Web's own picker: code model first, then the top tier,
-// then Pro, then Flash, then whatever is first.
+// Hydrogen only, no fallback to other tiers: measured 2026-11-13 on a 6-token
+// prompt, hydrogen p50 TTFT 12.2 s while gemini-pro and gemini-carbon gave no
+// first token within 45 s. Silently falling back to them would reintroduce
+// the hang, so a missing hydrogen is reported instead.
 export function pickCodingModel(models) {
   const list = (models || []).map((m) => (typeof m === "string" ? { id: m } : m));
-  const find = (re) => list.find((m) => re.test(m.id || ""));
-  const hit =
-    find(/argon/i) || find(/carbon/i) || find(/pro/i) || find(/flash/i) || list[0];
-  if (!hit) return { id: "", reason: "no models returned" };
-  const why = /argon/i.test(hit.id)
-    ? "argon = Gemini Web 'Kode & analisis'"
-    : /carbon/i.test(hit.id)
-      ? "carbon = top tier (Argon renamed Carbon 2026-11-10)"
-      : /pro/i.test(hit.id)
-        ? "pro tier"
-        : /flash/i.test(hit.id)
-          ? "flash tier (fast fallback)"
-          : "first model returned";
-  return { id: hit.id, reason: why };
+  const hit = list.find((m) => /hydrogen/i.test(m.id || ""));
+  if (!hit) return { id: "", reason: "no hydrogen model returned (run: gl models --refresh)" };
+  return { id: hit.id, reason: "hydrogen only (pro/carbon: no first token within 45 s, 2026-11-13)" };
 }
 export async function fetchModels(cfg = loadConfig(), { refresh = false } = {}) {
   const cache = modelsCachePath();
@@ -271,7 +262,7 @@ async function timeit(fn, n = 5) {
   }
   return stats(ts);
 }
-async function cmdBench(live) {
+async function cmdBench(live, { model = "", timeoutS = 60 } = {}) {
   const cfg = loadConfig();
   try {
     const h = await health(cfg);
@@ -304,20 +295,32 @@ async function cmdBench(live) {
     console.log("bench: live TTFT UNVERIFIED (no account in this run) — run: gl bench --live on a machine with a logged-in account.");
     return;
   }
-  const models = await fetchModels(cfg);
-  const pick = pickCodingModel(models);
-  if (!pick.id) throw new Error("bench --live: no models available");
-  console.log(`bench: live chat with ${pick.id} (time to first token)…`);
+  const id = model || pickCodingModel(await fetchModels(cfg)).id;
+  if (!id) throw new Error("bench --live: no models available");
+  console.log(`bench: live chat with ${id} (time to first token, timeout ${timeoutS} s)…`);
+  // Abort covers both the response headers and the first chunk: gsb sends
+  // headers only when the upstream's first byte arrives, so a stuck model
+  // (seen: gemini-pro/carbon >45 s on a 6-token prompt) would hang forever.
+  const c = new AbortController();
+  const timer = setTimeout(() => c.abort(), timeoutS * 1000);
   const t1 = performance.now();
-  const res = await fetch(`${baseUrl(cfg)}/chat/completions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey()}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: pick.id, messages: [{ role: "user", content: "Reply with exactly OK." }], stream: true }),
-  });
-  const reader = res.body.getReader();
-  const first = await reader.read();
-  console.log(`  live TTFT: ${(performance.now() - t1).toFixed(0)} ms, HTTP ${res.status}, first chunk ${first.value?.length ?? 0} bytes`);
-  await reader.cancel().catch(() => {});
+  try {
+    const res = await fetch(`${baseUrl(cfg)}/chat/completions`, {
+      method: "POST",
+      signal: c.signal,
+      headers: { Authorization: `Bearer ${apiKey()}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: id, messages: [{ role: "user", content: "Reply with exactly OK." }], stream: true }),
+    });
+    const reader = res.body.getReader();
+    const first = await reader.read();
+    console.log(`  live TTFT: ${(performance.now() - t1).toFixed(0)} ms, HTTP ${res.status}, first chunk ${first.value?.length ?? 0} bytes`);
+    await reader.cancel().catch(() => {});
+  } catch (e) {
+    if (c.signal.aborted) throw new Error(`bench --live: ${id} sent no first token within ${timeoutS} s — retry with a longer --timeout, or check quota: gl probe`);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 async function cmdConnect() {
   const cfg = loadConfig();
@@ -353,7 +356,9 @@ const HELP = `gemini-lumitome ${VERSION} — Gemini Web -> Lumitome, via gsb + 9
   gl probe            verify accounts, models, 5h/weekly quota
   gl start | stop | status
   gl models [--refresh]  list models from gsb (cached 1h) + coding pick
-  gl bench [--live]   measure health/models/chat timings (live = real TTFT, needs account)
+  gl bench [--live] [--model <id>] [--timeout <s>]
+                      measure health/models/chat timings (live = real TTFT, needs account;
+                      default model = coding pick, default timeout 60 s)
   gl connect          show 9router registration + Lumitome model name
   gl version | gl help
 Env: BRIDGE_API_KEY (pool key; default 'public' — change it), GL_GSB_BIN (override binary path).
@@ -372,7 +377,13 @@ async function main(argv) {
       case "stop": await cmdStop(); break;
       case "status": await cmdStatus(); break;
       case "models": await cmdModels(rest.includes("--refresh")); break;
-      case "bench": await cmdBench(rest.includes("--live")); break;
+      case "bench": {
+        const opt = (name) => { const i = rest.indexOf(name); return i >= 0 ? rest[i + 1] : undefined; };
+        const timeoutS = Number(opt("--timeout") ?? 60);
+        if (!(timeoutS > 0)) throw new Error("bench: --timeout must be a positive number of seconds");
+        await cmdBench(rest.includes("--live"), { model: opt("--model") || "", timeoutS });
+        break;
+      }
       case "connect": await cmdConnect(); break;
       default: console.error(`unknown command: ${cmd}\n${HELP}`); process.exitCode = 2;
     }
